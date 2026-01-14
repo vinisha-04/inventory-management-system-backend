@@ -19,10 +19,11 @@ export const OrderModel = {
 
       const order = orderRes.rows[0];
 
-      // Insert order items
+      // Validate products and stock levels
+      const validatedItems = [];
       for (const item of items) {
         const productRes = await client.query(
-          `SELECT price FROM product WHERE product_id = $1`,
+          `SELECT price, stock_level FROM product WHERE product_id = $1`,
           [item.product_id]
         );
 
@@ -30,14 +31,28 @@ export const OrderModel = {
           throw new Error(`Product ${item.product_id} not found`);
         }
 
-        const unitPrice = productRes.rows[0].price;
-        const totalPrice = unitPrice * item.quantity;
+        const { price: unitPrice, stock_level: currentStock } = productRes.rows[0];
+        if (currentStock < item.quantity) {
+          throw new Error(`Insufficient stock for product ${item.product_id}: available ${currentStock}, requested ${item.quantity}`);
+        }
+
+        validatedItems.push({ ...item, unitPrice });
+      }
+
+      // Insert order items and update stock
+      for (const item of validatedItems) {
+        const totalPrice = item.unitPrice * item.quantity;
 
         await client.query(
           `INSERT INTO order_items
            (order_id, product_id, quantity, price_at_order)
            VALUES ($1, $2, $3, $4)`,
           [order.order_id, item.product_id, item.quantity, totalPrice]
+        );
+
+        await client.query(
+          `UPDATE product SET stock_level = stock_level - $1 WHERE product_id = $2`,
+          [item.quantity, item.product_id]
         );
       }
 
